@@ -20,12 +20,19 @@ base_dir = '/Users/david/Desktop/kaggle_energy/'
 train_df = pd.read_csv(base_dir + 'train.csv')
 train_df["timestamp"] = pd.to_datetime(
     train_df["timestamp"], format='%Y-%m-%d %H:%M:%S')
+test_df = pd.read_csv(base_dir + 'test.csv')
+test_df["timestamp"] = pd.to_datetime(
+    test_df["timestamp"], format='%Y-%m-%d %H:%M:%S')
 weather_train_df = pd.read_csv(base_dir + 'weather_train.csv')
+weather_test_df = pd.read_csv(base_dir + 'weather_test.csv')
 building_meta_df = pd.read_csv(base_dir + 'building_metadata.csv')
+sample_submission = pd.read_csv(base_dir + 'sample_submission.csv')
 
 # check dimensions
 print('Size of train_df data', train_df.shape)
+print('Size of test_df data', test_df.shape)
 print('Size of weather_train_df data', weather_train_df.shape)
+print('Size of weather_test_df data', weather_train_df.shape)
 print('Size of building_meta_df data', building_meta_df.shape)
 
 # Function to reduce the DF size
@@ -64,27 +71,53 @@ def reduce_mem_usage(df, verbose=True):
 
 # Reducing memory
 train_df = reduce_mem_usage(train_df)
+test_df = reduce_mem_usage(test_df)
 weather_train_df = reduce_mem_usage(weather_train_df)
+weather_test_df = reduce_mem_usage(weather_test_df)
 building_meta_df = reduce_mem_usage(building_meta_df)
 
-# Merge frames together
-site_df = weather_train_df.join(building_meta_df, on='site_id', rsuffix='_dup')
-full_train_df = train_df.join(site_df, on='building_id', lsuffix='_dup')
+# Merge train frames together
+train_site_df = weather_train_df.join(
+    building_meta_df, on='site_id', rsuffix='_dup')
+full_train_df = train_df.join(train_site_df, on='building_id', lsuffix='_dup')
 full_train_df.drop(list(full_train_df.filter(
     regex='_dup$')), axis=1, inplace=True)
 
+# Merge test frames together
+test_site_df = weather_test_df.join(
+    building_meta_df, on='site_id', rsuffix='_dup')
+full_test_df = test_df.join(test_site_df, on='building_id', lsuffix='_dup')
+full_test_df.drop(list(full_test_df.filter(
+    regex='_dup$')), axis=1, inplace=True)
+
+# delete unused frames
+del train_df, test_df, weather_train_df,\
+    weather_test_df, train_site_df, test_site_df, building_meta_df
+
 # fill missing values with 0
-full_train_df.fillna(20, inplace=True)
+full_train_df.fillna(0, inplace=True)
+full_test_df.fillna(0, inplace=True)
 
 
 # Run regression using temp
 x_cols = ['air_temperature']
 target = 'meter_reading'
 x_train = full_train_df[x_cols].values
-y_train = full_train_df[target].values
+y_train = np.log1p(full_train_df["meter_reading"].values)
+x_test = full_test_df[x_cols].values
 
-# standardize because y vals getting made into some inf/nan in regression calc
-x_train = (x_train - np.mean(x_train, axis=0)) / np.std(x_train, axis=0)
-y_train = (y_train - np.mean(y_train, axis=0)) / np.std(y_train, axis=0)
-
+# run regression, predict, set 0 as minimum
 reg = LinearRegression().fit(x_train, y_train)
+pred = reg.predict(x_test)
+pred = list(map(lambda x: max(x, 0), pred))
+
+# undo log1p transformation
+pred = np.expm1(pred)
+
+# create submission data format
+submission = pd.read_csv(base_dir + 'sample_submission.csv')
+submission['meter_reading'] = pred
+submission.loc[submission['meter_reading'] < 0, 'meter_reading'] = 0
+attempt = 1
+submission.to_csv(base_dir + 'submissions/submission_' +
+                  str(attempt) + '.csv', index=False)
